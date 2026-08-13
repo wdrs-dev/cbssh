@@ -1,0 +1,7 @@
+# O Gradle 9.6 exige JDK 17+; sem isto o JitPack usa um JDK antigo e o build morre na configuração.
+jdk:
+  - openjdk17
+install:
+  # Os DOIS módulos: publicar só o `sshlib` deixa o `protocol` sem resolver para quem consome.
+  # Sem `test`: a bateria fala com servidor, e o JitPack não tem um.
+  - ./gradlew :protocol:publishToMavenLocal :sshlib:publishToMavenLocal -x test --no-daemon

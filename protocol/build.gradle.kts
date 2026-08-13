@@ -140,7 +140,14 @@ publishing {
 
 mavenPublishing {
     publishToMavenCentral(automaticRelease = true, validateDeployment = DeploymentValidation.PUBLISHED)
-    signAllPublications()
+    // Assina só quando há chave. O upstream assina no CI, onde as credenciais existem; sem esta
+    // guarda, todo build de terceiro (JitPack, máquina de quem só quer compilar) morre em
+    // `signMavenPublication ... has no configured signatory`.
+    if (providers.gradleProperty("signingInMemoryKey").isPresent ||
+        providers.gradleProperty("signing.keyId").isPresent
+    ) {
+        signAllPublications()
+    }
 
     pom {
         name.set("protocol")
