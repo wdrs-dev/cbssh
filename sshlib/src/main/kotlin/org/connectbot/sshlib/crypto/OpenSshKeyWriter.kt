@@ -23,7 +23,6 @@ import java.security.KeyPair
 import java.security.SecureRandom
 import java.security.interfaces.ECPrivateKey
 import java.security.interfaces.ECPublicKey
-import java.security.interfaces.EdECPrivateKey
 import java.security.interfaces.RSAPrivateCrtKey
 import java.security.interfaces.RSAPublicKey
 
@@ -145,26 +144,41 @@ internal object OpenSshKeyWriter {
 
     private fun extractEd25519Seed(keyPair: KeyPair): ByteArray {
         val privKey = keyPair.private
-        return when {
-            privKey is EdECPrivateKey -> {
-                privKey.bytes.orElseThrow { SshException("Cannot extract Ed25519 seed") }
-            }
 
-            privKey.javaClass.name.contains("Ed25519PrivateKey") -> {
-                // Our Ed25519PrivateKey or similar — extract from PKCS#8 encoding
-                val encoded = privKey.encoded
-                val reader = DerReader(encoded)
-                reader.readSequence { seq ->
-                    seq.readInteger() // version
-                    seq.readSequence { algId -> while (algId.hasRemaining()) algId.skipTag() }
-                    val innerBytes = seq.readOctetString()
-                    val innerReader = DerReader(innerBytes)
-                    innerReader.readOctetString()
-                }
+        // PKCS#8 PRIMEIRO, e sem mencionar `EdECPrivateKey` em lugar nenhum deste método.
+        //
+        // `java.security.interfaces.EdECPrivateKey` só existe a partir do Java 15 / Android 13. Em
+        // aparelhos mais antigos — Android 11 é comum — o ART falha ao RESOLVER o tipo assim que a
+        // instrução `instanceof` é executada, e o app morre com
+        // `Failed resolution of: Ljava/security/interfaces/EdECPrivateKey;` antes de qualquer
+        // verificação de versão adiantar. Não basta pôr o ramo depois: ele é executado do mesmo
+        // jeito.
+        //
+        // E não faz falta: toda chave Ed25519 — a do JDK, a do Tink, a do BouncyCastle — codifica
+        // em PKCS#8 com o seed dentro de um OCTET STRING aninhado, que é o que este bloco lê. O
+        // caminho pelo `EdECPrivateKey.bytes` era um atalho para uma delas.
+        runCatching {
+            val encoded = privKey.encoded ?: return@runCatching null
+            val reader = DerReader(encoded)
+            reader.readSequence { seq ->
+                seq.readInteger() // version
+                seq.readSequence { algId -> while (algId.hasRemaining()) algId.skipTag() }
+                val innerBytes = seq.readOctetString()
+                val innerReader = DerReader(innerBytes)
+                innerReader.readOctetString()
             }
+        }.getOrNull()?.let { if (it.size == 32) return it }
 
-            else -> throw SshException("Cannot extract Ed25519 seed from ${privKey.javaClass}")
-        }
+        // Sobra a chave que não entrega PKCS#8 utilizável (hardware, por exemplo). Aí sim o
+        // `getBytes()` do JDK 15+, por reflexão — que não faz o ART resolver tipo nenhum.
+        runCatching {
+            val metodo = privKey.javaClass.getMethod("getBytes")
+            @Suppress("UNCHECKED_CAST")
+            val optional = metodo.invoke(privKey) as? java.util.Optional<ByteArray>
+            optional?.orElse(null)
+        }.getOrNull()?.let { return it }
+
+        throw SshException("Cannot extract Ed25519 seed from ${privKey.javaClass}")
     }
 
     private fun writeEcdsaPrivate(out: ByteArrayOutputStream, keyPair: KeyPair, keyType: String) {

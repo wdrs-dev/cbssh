@@ -26,7 +26,6 @@ import java.security.KeyPairGenerator
 import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.interfaces.ECPrivateKey
-import java.security.interfaces.EdECPrivateKey
 import java.security.interfaces.RSAPrivateCrtKey
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.ECParameterSpec
@@ -224,13 +223,32 @@ internal object PemKeyReader {
         }
     }
 
+    /** O seed de 32 bytes dentro de um PKCS#8 de Ed25519: OCTET STRING dentro de OCTET STRING. */
+    private fun seedDePkcs8(data: ByteArray): ByteArray {
+        val reader = DerReader(data)
+        val seed = reader.readSequence { seq ->
+            seq.readInteger() // version
+            seq.readSequence { algId -> while (algId.hasRemaining()) algId.skipTag() }
+            val innerBytes = seq.readOctetString()
+            DerReader(innerBytes).readOctetString()
+        }
+        if (seed.size != 32) throw SshException("Cannot extract Ed25519 seed")
+        return seed
+    }
+
     private fun readPkcs8(data: ByteArray): SshPrivateKey {
         // Use JCA's built-in PKCS#8 parsing — try each algorithm
         try {
             val kf = KeyFactory.getInstance("Ed25519")
             val privKey = kf.generatePrivate(PKCS8EncodedKeySpec(data))
-            val edPriv = privKey as EdECPrivateKey
-            val seed = edPriv.bytes.orElseThrow { SshException("Cannot extract Ed25519 seed") }
+            // O SEED VEM DO PKCS#8 QUE JÁ ESTÁ NA MÃO, e não de um `as EdECPrivateKey`.
+            //
+            // Aquele tipo só existe do Java 15 / Android 13 em diante: em Android 11 o ART falha ao
+            // resolvê-lo no instante do cast e o app morre com `Failed resolution of:
+            // Ljava/security/interfaces/EdECPrivateKey;`. Aqui o `data` É a codificação PKCS#8 de
+            // onde a chave acabou de ser gerada, então o seed sai dela — sem depender do tipo
+            // concreto que o provider devolveu, que em Android antigo nem é o do JDK.
+            val seed = seedDePkcs8(data)
             val pubKey = ed25519PublicKeyFromSeed(seed)
             return SshPrivateKey("ssh-ed25519", KeyPair(pubKey, privKey), "ssh-ed25519")
         } catch (_: InvalidKeySpecException) {}
