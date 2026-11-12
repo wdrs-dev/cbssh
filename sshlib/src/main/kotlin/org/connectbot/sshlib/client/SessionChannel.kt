@@ -117,7 +117,7 @@ class SessionChannel internal constructor(
         if (!lifecycle.receiveData {
                 window.consumeLocal(data.size)
                 if (stdoutIngress.trySend(data).isFailure) {
-                    throw org.connectbot.sshlib.SshException("Received data for a closed stdout stream")
+                    discardInFlight("data", data.size)
                 }
             }
         ) {
@@ -130,15 +130,26 @@ class SessionChannel internal constructor(
                 window.consumeLocal(data.size)
                 if (dataType == 1) {
                     if (stderrIngress.trySend(data).isFailure) {
-                        throw org.connectbot.sshlib.SshException("Received data for a closed stderr stream")
+                        discardInFlight("stderr data", data.size)
                     }
                 } else if (extendedDataIngress.trySend(dataType to data).isFailure) {
-                    throw org.connectbot.sshlib.SshException("Received data for a closed extended-data stream")
+                    discardInFlight("extended data", data.size)
                 }
             }
         ) {
             throw org.connectbot.sshlib.SshException("Received extended data after EOF or CLOSE on channel $localChannelNumber")
         }
+    }
+
+    /**
+     * The ingress is only closed while the lifecycle still accepts data in one situation: we sent
+     * CHANNEL_CLOSE ([close]) and the peer's CLOSE has not arrived yet. RFC 4254 section 5.3 lets
+     * the peer keep sending until it sees our CLOSE, so whatever was already in flight lands here.
+     * Nobody is reading it anymore — drop it. Throwing tore down the whole transport (every other
+     * channel, SFTP and forwards included) with "Received data for a closed stdout stream".
+     */
+    private fun discardInFlight(kind: String, size: Int) {
+        logger.debug("Discarding $size bytes of $kind in flight after local CLOSE on channel $localChannelNumber")
     }
 
     private suspend fun <T> deliverData(

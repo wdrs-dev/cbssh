@@ -633,7 +633,7 @@ internal class SshClientStateMachine(
 
     suspend fun receiveUserauthBanner(msg: SshMsgUserauthBanner): Boolean = process(SshEvent.ReceiveUserauthBanner(msg))
 
-    suspend fun openChannel(channelType: String, localChannelNumber: Int, initialWindowSize: Int, maxPacketSize: Int): Boolean = process(SshEvent.OpenChannel(channelType, localChannelNumber, initialWindowSize, maxPacketSize))
+    suspend fun openChannel(channelType: String, localChannelNumber: Int, initialWindowSize: Int, maxPacketSize: Int): Boolean = processOrQueue(SshEvent.OpenChannel(channelType, localChannelNumber, initialWindowSize, maxPacketSize))
 
     suspend fun receiveChannelOpenConfirmation(msg: SshMsgChannelOpenConfirmation): Boolean = process(SshEvent.ReceiveChannelOpenConfirmation(msg))
 
@@ -644,7 +644,7 @@ internal class SshClientStateMachine(
         requestType: String,
         wantReply: Boolean,
         message: SshMsgChannelRequest,
-    ): Boolean = process(SshEvent.SendChannelRequest(recipientChannel, requestType, wantReply, message))
+    ): Boolean = processOrQueue(SshEvent.SendChannelRequest(recipientChannel, requestType, wantReply, message))
 
     suspend fun receiveChannelSuccess(recipientChannel: Int): Boolean = process(SshEvent.ReceiveChannelSuccess(recipientChannel))
 
@@ -690,6 +690,20 @@ internal class SshClientStateMachine(
     internal fun formalModel(): SshStateMachineFormalModel = stateMachine.toSshFormalModel()
 
     private suspend fun process(event: SshEvent): Boolean = stateMachine.processEvent(event) == ProcessingResult.PROCESSED
+
+    /**
+     * Para os eventos locais cujo efeito é ESCREVER no socket e cuja resposta é esperada em outro
+     * lugar (`OpenChannel` → CHANNEL_OPEN_CONFIRMATION; `SendChannelRequest` → CHANNEL_SUCCESS).
+     *
+     * `PENDING` quer dizer que o evento foi enfileirado e VAI rodar: o pacote sai logo depois. Ler
+     * isso como recusa fazia o chamador desistir (o `check` lança e o pedido pendente é removido do
+     * registro) enquanto o pacote saía assim mesmo — e a confirmação do servidor chegava para um
+     * pedido que já não existia: `ProtocolViolationException: Channel confirmation with no pending
+     * open for channel N`, e o transporte inteiro caía. Acontece quando vários canais são abertos
+     * de uma vez, como logo depois de uma reconexão (terminal, SFTP, vigias).
+     */
+    private suspend fun processOrQueue(event: SshEvent): Boolean =
+        stateMachine.processEvent(event) != ProcessingResult.IGNORED
 
     /**
      * As guardas de autorização não têm efeito próprio: elas só perguntam "este pacote cabe no

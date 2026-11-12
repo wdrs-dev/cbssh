@@ -258,4 +258,18 @@ class SessionChannelTest {
 
         coVerify(exactly = 1) { conn.sendChannelEof(1) }
     }
+    // RFC 4254 §5.3: depois de mandar CHANNEL_CLOSE, o outro lado ainda pode mandar dados que já
+    // estavam a caminho. Eles têm de ser descartados — e não derrubar a conexão inteira com
+    // "Received data for a closed stdout stream".
+    @Test
+    fun `data in flight after local close is discarded, not fatal`() = runTest {
+        val (channel, _) = createChannel()
+
+        channel.close()
+
+        channel.onData(byteArrayOf(1, 2, 3))
+        channel.onExtendedData(1, byteArrayOf(4))
+        channel.onExtendedData(2, byteArrayOf(5))
+        assertFalse(channel.isOpen)
+    }
 }
